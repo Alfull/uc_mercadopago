@@ -1,0 +1,131 @@
+<?php 
+
+define('MERCADOPAGO_URL', 'https://test.MyMerchantGateway.com');
+
+libraries_load("mercadopago");
+
+function uc_mercadopago_menu() {
+  $items['paymentcomplete/%/%'] = array(
+      'title' => 'Payment Complete',
+      'page callback' => 'uc_mercadopago_complete',
+      'page arguments' => array(2,3),
+      'access arguments' => array('access content'),
+      'type' => MENU_CALLBACK,
+  );
+  return $items;
+}
+
+
+function uc_mercadopago_complete() {
+
+  if (empty($_POST)) {
+    watchdog('My Payment Gateway',
+        'Received an empty or incomplete response.  Response details: @request_details',
+        array('@request_details' =>  print_r($_POST,true)), WATCHDOG_ERROR);
+
+    return 'There was a problem with your payment';
+  }
+
+  if ($_POST['status'] == 'SUCCESS') {
+
+    // Insert logic here to make sure payment info can be matched to valid order
+
+    // Assuming all tests passed and payment was successful
+    // Complete the order
+    uc_payment_enter($order_id, 'my_pay_gateway', $amount, $order->uid, NULL, $orderId);
+    uc_cart_complete_sale($order, variable_get('uc_new_customer_login', FALSE));
+
+    return 'Thank you for your purchase';
+  }
+}
+
+
+function uc_mercadopago_uc_payment_gateway() {
+  $gateways['uc_mercadopago'] = array(
+      'title' => t('MercadoPago'),
+      'description' => t('Procesar pagos através de MercadoPago'),
+  );
+  return $gateways;
+}
+
+
+
+function uc_mercadopago_uc_payment_method() {
+  $methods[] = array(
+      'id' => 'mercadopago_credit',
+      'name' => t('MercadoPago'),
+      'title' => t('Mercado Pago'),
+      'desc' => t('Pagar através de MercadoPago'),
+      'callback' => 'uc_mercadopago_method',
+      'redirect' => 'uc_mercadopago_form',
+      'weight' => 1,
+      'checkout' => TRUE,
+  );
+  return $methods;
+}
+
+
+function uc_mercadopago_method($op, &$order) {
+  switch ($op) {
+    case 'settings':
+      $form['mercadopago_client_id'] = array(
+      '#type' => 'textfield',
+      '#title' => t('CLIENT_ID'),
+      '#help' => t('Este dato se obtiene en '),
+      '#description' => t('Tu CLIENT_ID de MercadoPago'),
+      '#default_value' => variable_get('mercadopago_client_id'),
+      );
+      $form['mercadopago_client_secret'] = array(
+          '#type' => 'textfield',
+          '#title' => t('CLIENT_SECRET'),
+          '#description' => t('Tu CLIENT_SECRET de MercadoPago'),
+          '#default_value' => variable_get('mercadopago_client_secret'),
+      );
+      $form['mercadopago_checkout_label'] = array(
+          '#type' => 'textfield',
+          '#title' => t('Etiqueta del botón de compra'),
+          '#description' => t('Etiqueta del botón de compra del checkout final cuando el comprador está apunto de pagar.'),
+          '#default_value' => variable_get('mercadopago_checkout_label'),
+      );
+      return $form;
+  }
+}
+
+
+function uc_mercadopago_form($form, &$form_state, $order) {
+
+  // Collect some information about the order
+  $time = time();
+  $order_id = $order->order_id;
+  $order_total = number_format($order->order_total, 2, '.', '');
+  $customer_email = $order->primary_email;
+  
+  print_r($order);
+  exit;
+  
+  $cart_id = uc_cart_get_id();
+
+  // Build the data to send to my payment gateway
+  $data = array(
+      'timestamp' => time(),
+      'order_id' => $order->order_id,
+      'order_total' => number_format($order->order_total, 2, '.', ''),
+      'customer_email' => $order->primary_email,
+      'cart_id' => uc_cart_get_id(),
+  );
+
+  // This code goes behind the final checkout button of the checkout pane
+  foreach ($data as $name => $value) {
+    if (!empty($value)) {
+      $form[$name] = array('#type' => 'hidden', '#value' => $value);
+    }
+  }
+
+  $form['#action'] = MERCADOPAGO_URL;
+  $form['actions'] = array('#type' => 'actions');
+  $form['actions']['submit'] = array(
+      '#type' => 'submit',
+      '#value' => variable_get('mercadopago_checkout_label', t('Submit Orders')),
+  );
+  return $form;
+}

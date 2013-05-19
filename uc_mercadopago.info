@@ -1,0 +1,6 @@
+name = MercadoPago
+description = Processes payments using MercadoPago Website Payments.
+dependencies[] = uc_payment
+dependencies[] = libraries
+package = Ubercart - payment
+core = 7.x
