@@ -1,14 +1,21 @@
 <?php 
 
-define('MERCADOPAGO_URL', 'https://test.MyMerchantGateway.com');
+//TODO: Antes de poner en producción se debe eliminar logs, banderas de sandbox, inits, y currency
 
-libraries_load("mercadopago");
+//Cargamos el sdk de mercadopago
+
+$path = libraries_get_path('mercadopago');
+if ($path == libraries_get_path('mercadopago')) {
+  include_once($path.'/mercadopago.php');
+
+}
+
 
 function uc_mercadopago_menu() {
-  $items['paymentcomplete/%/%'] = array(
+  $items['uc_mercadopago/%'] = array(
       'title' => 'Payment Complete',
       'page callback' => 'uc_mercadopago_complete',
-      'page arguments' => array(2,3),
+      'page arguments' => array(1),
       'access arguments' => array('access content'),
       'type' => MENU_CALLBACK,
   );
@@ -16,23 +23,45 @@ function uc_mercadopago_menu() {
 }
 
 
-function uc_mercadopago_complete() {
+function uc_mercadopago_complete($result) {
 
-  if (empty($_POST)) {
-    watchdog('My Payment Gateway',
+  if (empty($_GET)) {
+    watchdog('MercadoPago Gateway',
         'Received an empty or incomplete response.  Response details: @request_details',
         array('@request_details' =>  print_r($_POST,true)), WATCHDOG_ERROR);
 
     return 'There was a problem with your payment';
   }
+  
 
-  if ($_POST['status'] == 'SUCCESS') {
+  
+  if ($result == 'success') {
 
+    
+    
     // Insert logic here to make sure payment info can be matched to valid order
-
+    //TODO: sanitizar order_id
+    $order_id = intval($_GET['external_reference']);
+    
+    $order = uc_order_load($order_id);
+    
+    //print_r($order);
+    
     // Assuming all tests passed and payment was successful
     // Complete the order
-    uc_payment_enter($order_id, 'my_pay_gateway', $amount, $order->uid, NULL, $orderId);
+    $collection_id = $_GET['collection_id'];
+    $collection_status = $_GET['collection_status'];
+    $preference_id = $_GET['preference_id'];
+    $payment_type = $_GET['payment_type'];    
+
+    $resmercado = array(
+         'collection_id' => $collection_id,
+         'collection_status' => $collection_status,
+         'preference_id' => $preference_id,
+         'payment_type' => $payment_type
+    );
+    
+    uc_payment_enter($order_id, 'mercadopago', number_format($order->order_total, 2, '.', ''), $order->uid, json_encode($resmercado));
     uc_cart_complete_sale($order, variable_get('uc_new_customer_login', FALSE));
 
     return 'Thank you for your purchase';
@@ -87,25 +116,69 @@ function uc_mercadopago_method($op, &$order) {
           '#description' => t('Etiqueta del botón de compra del checkout final cuando el comprador está apunto de pagar.'),
           '#default_value' => variable_get('mercadopago_checkout_label'),
       );
+
+/*      
+      $form['mercadopago_backurl_success'] = array(
+          '#type' => 'textfield',
+          '#title' => t('Url de pantalla de éxito'),
+          '#description' => t('Es el URL de la página a mostrar una vez que la venta ha sido exitosa.'),
+          '#default_value' => variable_get('mercadopago_backurl_success'),
+      );
+      
+      $form['mercadopago_backurl_error'] = array(
+          '#type' => 'textfield',
+          '#title' => t('Url de pantalla de error'),
+          '#description' => t('Es el URL de la página a mostrar cuando se ha producido un error en la venta.'),
+          '#default_value' => variable_get('mercadopago_backurl_error'),
+      );
+      
+      $form['mercadopago_backurl_error'] = array(
+          '#type' => 'textfield',
+          '#title' => t('Url de pantalla de error'),
+          '#description' => t('Es el URL de la página a mostrar cuando se ha producido un error en la venta.'),
+          '#default_value' => variable_get('mercadopago_backurl_error'),
+      );
+*/      
       return $form;
   }
 }
 
-
+/**
+ * Muestra la forma final de revisión y genera el documento para realizar el checkout con mercadopagl
+ * @param $form
+ * @param $form_state
+ * @param $order
+ * @return multitype:string
+ */
 function uc_mercadopago_form($form, &$form_state, $order) {
 
-  // Collect some information about the order
+  
+  //Instanciamos el API de mercadopago
+  $mp = new MP(variable_get('mercadopago_client_id','none'), variable_get('mercadopago_client_secret', 'none'));
+  
+  $mp->sandbox_mode(TRUE);
+  
+  //Generamos el access token
+  $accessToken = $mp->get_access_token();  
+
+    
+  
+  // Info general de la orden
   $time = time();
   $order_id = $order->order_id;
   $order_total = number_format($order->order_total, 2, '.', '');
-  $customer_email = $order->primary_email;
+  $email_comprador = $order->primary_email;
   
-  print_r($order);
-  exit;
+  $divisa = $order->currency;
   
+  //TODO: Eliminar divisa de prueba
+  $divisa = 'ARS';
+  
+  //Comprador
+  $nombre_comprador = $order->billing_first_name;
+  $apellido_comprador = $order->billing_last_name;
   $cart_id = uc_cart_get_id();
-
-  // Build the data to send to my payment gateway
+  
   $data = array(
       'timestamp' => time(),
       'order_id' => $order->order_id,
@@ -114,6 +187,45 @@ function uc_mercadopago_form($form, &$form_state, $order) {
       'cart_id' => uc_cart_get_id(),
   );
 
+  $items = array();
+  //Para cada producto en el carro.
+  foreach($order->products as $product) {
+    $uprice = number_format($product->price, 2, '.', '');
+    settype($uprice, "float");
+    
+    $items[] = array (
+            "id" => $product->order_product_id,
+            "title" => $product->title,
+            "description" => $product->title,
+            "quantity" => intval($product->qty),
+            "currency_id" => $divisa,
+            "unit_price" => $uprice,
+        );
+  }
+  
+  $backurls = array(
+    "success" => "http://localhost/uberdrupal/?q=uc_mercadopago/success&",
+    "failure" => "http://localhost/uberdrupal/?q=uc_mercadopago/failure&",
+    "pending" => "http://localhost/uberdrupal/?q=uc_mercadopago/pending&"
+  );
+  $preference = array (
+      "payer" => array (
+          "name" => $nombre_comprador,
+          "surname" => $apellido_comprador,
+          "email" => $email_comprador
+      ),
+      "items" => $items,
+      "back_urls" => $backurls,
+      "external_reference" => $order->order_id
+  );
+
+  $preferenceResult = $mp->create_preference($preference);
+  
+  error_log(print_r($preferenceResult,true),3,'/tmp/resultado.log');
+  
+  $init_point = $preferenceResult['response']['sandbox_init_point']; 
+  
+  
   // This code goes behind the final checkout button of the checkout pane
   foreach ($data as $name => $value) {
     if (!empty($value)) {
@@ -121,11 +233,69 @@ function uc_mercadopago_form($form, &$form_state, $order) {
     }
   }
 
-  $form['#action'] = MERCADOPAGO_URL;
+  //$form['#action'] = MERCADOPAGO_URL;
   $form['actions'] = array('#type' => 'actions');
   $form['actions']['submit'] = array(
-      '#type' => 'submit',
-      '#value' => variable_get('mercadopago_checkout_label', t('Submit Orders')),
+    '#markup' => "<a href=\"".$init_point."\" name=\"MP-Checkout\" class=\"lightblue\" mp-mode=\"modal\" onreturn=\"resultado_checkout\">".variable_get('mercadopago_checkout_label')."</a>" 
+  );
+  
+  $form['actions']['script'] = array(
+
+    '#markup' => "
+  <script type=\"text/javascript\">
+  (function(){
+    function \$MPBR_load(){
+      window.\$MPBR_loaded !== true && (function(){
+        var s = document.createElement(\"script\");s.type = \"text/javascript\";s.async = true;
+        s.src = (\"https:\"==document.location.protocol?\"https://www.mercadopago.com/org-img/jsapi/mptools/buttons/\":\"http://mp-tools.mlstatic.com/buttons/\")+\"render.js\";
+        var x = document.getElementsByTagName('script')[0];x.parentNode.insertBefore(s, x);window.\$MPBR_loaded = true;
+      })();
+    }
+    window.\$MPBR_loaded !== true ? (window.attachEvent ? window.attachEvent('onload', \$MPBR_load) : window.addEventListener('load', \$MPBR_load, false)) : null;
+  })();
+      
+      
+      
+   function resultado_checkout(res) {
+      console.log(res);
+      if(res.collection_status!=null) {
+        var urlsuccess = '?q=uc_mercadopago/success&collection_id='+res.collection_id+'&collection_status='+res.collection_status+'&preference_id='+res.preference_id+'&external_reference='+res.external_reference+'&payment_type='+res.payment_type;
+        window.location = urlsuccess;
+      }
+   }
+  </script>
+  "      
+      
   );
   return $form;
+}
+
+
+/**
+ * Ejecuta cuando regresa mercado pago exitosamente
+ */
+function uc_mercadopago_complete2($result) {
+  
+  error_log($result);
+  
+  //print_r($_GET);
+  
+  // If the order ID specified in the return URL is not the same as the one in
+  // the user's session, we need to assume this is either a spoof or that the
+  // user tried to adjust the order on this side while at PayPal. If it was a
+  // legitimate checkout, the IPN will still come in from PayPal so the order
+  // gets processed correctly. We'll leave an ambiguous message just in case.
+  if (!isset($_SESSION['cart_order']) || intval($_SESSION['cart_order']) != $order->order_id) {
+    drupal_set_message(t('¡Gracias por tu compra! MercadoPago nos notificará una vez que tu pago se haya procesado.'));
+    drupal_goto('cart');
+  }
+
+  // Ensure the payment method is mercadopago.
+  if ($order->payment_method != 'mercadopago') {
+    drupal_goto('cart');
+  }
+
+  // This lets us know it's a legitimate access of the complete page.
+  $_SESSION['uc_checkout'][$_SESSION['cart_order']]['do_complete'] = TRUE;
+  drupal_goto('cart/checkout/complete');
 }
